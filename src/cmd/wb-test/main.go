@@ -32,7 +32,7 @@ func (h *Handler) FindInUrl(ctx context.Context, u *url.URL) error {
 		return err
 	}
 
-	resp, err := h.client.Do(req)
+	resp, err := h.client.Do(req.WithContext(ctx))
 	if err != nil {
 		return err
 	}
