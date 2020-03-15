@@ -76,7 +76,7 @@ func main() {
 
 		u, err := url.Parse(scanner.Text())
 		if err != nil {
-			log.Fatal(err)
+			log.Println(err)
 			continue
 		}
 		if n == max {
