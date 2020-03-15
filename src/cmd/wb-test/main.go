@@ -1,88 +1,95 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
+	"errors"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"sync"
+	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
-func init() {
-	log.SetFlags(0)
+type Handler struct {
+	total  int
+	mu     *sync.Mutex
+	client *http.Client
 }
 
-func HandleUri(uri string, total *int, wg *sync.WaitGroup, mux *sync.Mutex) {
-	// Decrement the counter when the goroutine completes.
-	defer wg.Done()
-	// Do http GET request.
-	resp, err := http.Get(uri)
+func (h *Handler) Total() int {
+	return h.total
+}
+
+func (h *Handler) FindInUrl(ctx context.Context, u *url.URL) error {
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
-	// Close response body.
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return err
+	}
 	defer resp.Body.Close()
-	// Read response body.
+
+	if resp.StatusCode/100 != 2 {
+		return errors.New("bad status code")
+	}
+
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatalln(err)
+		return err
 	}
+
 	count := bytes.Count(body, []byte("Go"))
-	mux.Lock()
-	// Only one goroutine at a time can access the total variable.
-	*total += count
-	mux.Unlock()
+	log.Printf("For %s found: %d\n", u.String(), count)
+	h.mu.Lock()
+	h.total += count
+	h.mu.Unlock()
 
-	log.Printf("Count for %s %d", uri, count)
-}
-
-func ValidUrl(uri string) {
-	_, err := url.ParseRequestURI(uri)
-	if err != nil {
-		log.Fatalln(err)
-	}
+	return nil
 }
 
 func main() {
-
 	var (
-		total int
-		uri   string
-		wg    sync.WaitGroup
-		mux   sync.Mutex
+		n      = 0
+		max    = 5
+		client = &http.Client{
+			Timeout: time.Second * 10,
+		}
 	)
 
-	// Read stdin.
-	_bytes, err := ioutil.ReadAll(os.Stdin)
-	if err != nil {
-		log.Fatalln(err)
-	}
+	handler := &Handler{client: client, mu: &sync.Mutex{}}
 
-	// Convert bytes to string.
-	toStr := string(_bytes)
-
-	// Split string by \n
-	splited := strings.Split(toStr, "\n")
-	// Delete empty strings from a slice.
-	for i := 0; i < len(splited); i++ {
-		if splited[i] == "" {
-			splited = append(splited[:i], splited[i+1:]...)
+	eg, ctx := errgroup.WithContext(context.Background())
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		if scanner.Err() != nil {
+			log.Fatal(scanner.Err())
 		}
-	}
 
-	for i := 0; i < len(splited); i++ {
-		uri = splited[i]
-		// uri is valid
-		ValidUrl(uri)
-		// Increment the WaitGroup counter.
-		wg.Add(1)
-		go HandleUri(uri, &total, &wg, &mux)
-	}
+		u, err := url.Parse(scanner.Text())
+		if err != nil {
+			log.Fatal(err)
+			continue
+		}
+		if n == max {
+			break
+		}
 
-	// Wait for complete goroutines.
-	wg.Wait()
-	log.Printf("Total: %v", total)
+		eg.Go(func() error { return handler.FindInUrl(ctx, u) })
+
+		n++
+
+	}
+	if err := eg.Wait(); err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("Total found: %d", handler.Total())
 }
